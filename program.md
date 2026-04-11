@@ -1,114 +1,107 @@
-# autoresearch
+# autoresearch — TrimNN edition
 
-This is an experiment to have the LLM do its own research.
+Autonomous research loop for improving neural subgraph matching on spatial cell-type graphs.
+
+## Background
+
+TrimNN predicts how many times a small graph pattern (e.g. a triangle of cell types A-B-C)
+appears as a subgraph inside a large spatial transcriptomics graph. The ground truth is
+exact VF2 subgraph isomorphism counting. The goal is to train a GNN that approximates
+this counting function as accurately as possible.
+
+**Data**: `demo_data.gml` — 743 nodes (cells), 2211 edges, 8 cell types.
+Each training sample is a (pattern, k-hop subgraph, VF2 count) triple.
+There are 120 non-isomorphic triangle patterns × 743 nodes ≈ 89,160 samples total.
 
 ## Setup
 
-To set up a new experiment, work with the user to:
-
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
+1. **Agree on a run tag** — propose a tag based on today's date (e.g. `apr11`). The branch
+   `autoresearch/<tag>` must not already exist.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
-
-Once you get confirmation, kick off the experimentation.
+3. **Read the in-scope files**:
+   - `prepare.py` — fixed: data generation, VF2 ground truth, dataset, evaluation. Do not modify.
+   - `train.py` — the file you modify: model architecture, optimizer, hyperparameters.
+4. **Verify data exists**: run `python prepare.py` once if the cache is missing
+   (`~/.cache/autoresearch_trimnn/data_k2.pkl`).
+5. **Initialize results.tsv** with just the header row.
+6. **Confirm and go.**
 
 ## Experimentation
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+Each experiment runs for a **fixed time budget of 5 minutes** (wall-clock training time,
+excluding startup). Launch with:
 
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+```
+python train.py > run.log 2>&1
+```
 
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+**What you CAN do** — modify `train.py` only:
+- Model architecture: GNN layers, hidden dim, aggregation, attention, skip connections
+- Optimizer: Adam, SGD, Muon, learning rate, weight decay, scheduling
+- Loss function: MSE, MAE, Huber, log-space, count-weighted, etc.
+- Hyperparameters: batch size, dropout, gradient clipping
+- Training loop: learning rate warmup/warmdown, gradient accumulation
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+**What you CANNOT do**:
+- Modify `prepare.py` — it defines the task and the fixed evaluation
+- Change the data, VF2 counts, or train/val split
+- Install new packages
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+**The goal: get the lowest `val_mse`** (mean squared error between predicted and
+VF2-exact counts). Lower is better. The time budget is fixed, so improvements come
+entirely from better architecture or optimization.
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+**Hints**:
+- Most samples have count = 0 (sparse). Consider loss weighting or a two-stage model.
+- The input distribution is (120 patterns) × (743 k-hop subgraphs). Pattern identity
+  matters — the model must distinguish cell-type label combinations.
+- The GNN must compare pattern structure against graph structure to predict matches.
+- Cross-graph attention (pattern queries graph) is a natural inductive bias here.
+- Log-transforming counts (log1p / expm1) often helps with skewed count distributions.
 
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+**Simplicity criterion**: a small improvement from simpler code is better than
+a large improvement from fragile complexity.
 
 ## Output format
 
-Once the script finishes it prints a summary like this:
-
 ```
 ---
-val_bpb:          0.997900
+val_mse:          0.123456
 training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
+total_seconds:    305.2
+peak_ram_mb:      0.0
+num_steps:        1234
+num_params_M:     0.52
+hidden_dim:       128
+num_layers:       3
 ```
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
-
+Extract the key metric:
 ```
-grep "^val_bpb:" run.log
+grep "^val_mse:" run.log
 ```
 
 ## Logging results
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
-
-The TSV has a header row and 5 columns:
+Track in `results.tsv` (tab-separated, untracked by git):
 
 ```
-commit	val_bpb	memory_gb	status	description
+commit	val_mse	status	description
 ```
 
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
-
-Example:
-
-```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
-```
-
-## The experiment loop
-
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+## Experiment loop
 
 LOOP FOREVER:
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+1. Check git state (branch, last commit)
+2. Tune `train.py` with an experimental idea
+3. `git commit`
+4. `python train.py > run.log 2>&1`
+5. `grep "^val_mse:" run.log`
+6. If empty → crash. Run `tail -50 run.log` to diagnose. Fix if trivial, else skip.
+7. Log to `results.tsv`
+8. If `val_mse` improved (lower) → keep the commit
+9. If `val_mse` is equal or worse → `git reset --hard HEAD~1`
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
-
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
-
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
-
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
-
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+**NEVER STOP.** Once started, run until the human interrupts you. Do not ask for permission
+to continue. You are an autonomous researcher.
