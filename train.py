@@ -30,11 +30,12 @@ from prepare import (
 
 HIDDEN_DIM    = 128      # GNN hidden dimension
 NUM_LAYERS    = 3        # number of GNN message-passing layers
-DROPOUT       = 0.1      # dropout probability
+DROPOUT       = 0.05     # dropout probability
 LR            = 1e-3     # learning rate
 WEIGHT_DECAY  = 1e-5     # Adam weight decay
 BATCH_SIZE    = 256      # training batch size
 MAX_GRAD_NORM = 8.0      # gradient clipping
+WARMUP_STEPS  = 50       # linear LR warmup
 
 # ---------------------------------------------------------------------------
 # Model
@@ -159,6 +160,15 @@ optimizer = torch.optim.Adam(
     model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY
 )
 
+def lr_lambda(step):
+    if step < WARMUP_STEPS:
+        return step / max(1, WARMUP_STEPS)
+    # cosine decay to 5% of peak over 2000 steps
+    t = (step - WARMUP_STEPS) / max(1, 2000 - WARMUP_STEPS)
+    return 0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * min(t, 1.0)))
+
+scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
 n_params = sum(p.numel() for p in model.parameters())
 print(f"Parameters: {n_params:,}")
 
@@ -193,6 +203,7 @@ while True:
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
     optimizer.step()
+    scheduler.step()
 
     dt = time.time() - t0
 
