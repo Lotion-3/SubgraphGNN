@@ -54,7 +54,7 @@ class GNNLayer(nn.Module):
         # x: (B, N, D)  adj_norm: (B, N, N) row-normalised
         msg = torch.bmm(adj_norm, x)
         h   = torch.cat([x, msg], dim=-1)
-        return x + self.drop(self.norm(F.relu(self.linear(h))))   # residual
+        return x + self.drop(self.norm(F.gelu(self.linear(h))))   # residual
 
 
 class SubgraphGNN(nn.Module):
@@ -92,7 +92,7 @@ class SubgraphGNN(nn.Module):
         self.norm_g = nn.LayerNorm(hidden_dim)
         self.predict = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_dim, 1),
             nn.Softplus(),   # smooth non-negative output
         )
@@ -105,7 +105,7 @@ class SubgraphGNN(nn.Module):
 
     def _encode(self, adj, feat):
         adj_n = self._norm_adj(adj)
-        x = F.relu(self.embed(feat))
+        x = F.gelu(self.embed(feat))
         for layer in self.layers:
             x = layer(x, adj_n)
         return x
