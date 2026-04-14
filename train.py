@@ -90,7 +90,7 @@ class SubgraphGNN(nn.Module):
         )
         self.norm_p   = nn.LayerNorm(hidden_dim)
         self.norm_g   = nn.LayerNorm(hidden_dim)
-        self.gate_g   = nn.Linear(hidden_dim, 1)   # scalar gate per graph node
+        self.gate_g   = nn.Linear(hidden_dim, hidden_dim)   # vector gate per graph node
         self.predict  = nn.Sequential(
             nn.Linear(hidden_dim * 3, hidden_dim),   # p_max + g_max + g_gated_sum
             nn.GELU(),
