@@ -30,7 +30,7 @@ from prepare import (
 
 HIDDEN_DIM    = 128      # GNN hidden dimension
 NUM_LAYERS    = 3        # number of GNN message-passing layers
-DROPOUT       = 0.05     # dropout probability
+DROPOUT       = 0.0      # no dropout — model benefits from full capacity
 LR            = 1e-3     # learning rate
 WEIGHT_DECAY  = 1e-5     # Adam weight decay
 BATCH_SIZE    = 256      # training batch size
