@@ -119,7 +119,7 @@ class SubgraphGNN(nn.Module):
         # Augment graph enc with structural triangle count per node
         A2_g  = torch.bmm(g_adj, g_adj)                              # (B, Ng, Ng) 2-hop paths
         tri_c = (A2_g * g_adj).sum(dim=-1, keepdim=True) / 2        # (B, Ng, 1) triangles per node
-        g_enc = g_enc + self.tri_embed(tri_c)                        # (B, Ng, H) augmented
+        g_enc = g_enc + self.tri_embed(torch.log1p(tri_c))             # (B, Ng, H) log-scale embed
 
         p_mask_f = p_mask.unsqueeze(-1).float()  # (B, Np, 1)
         g_mask_f = g_mask.unsqueeze(-1).float()
