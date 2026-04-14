@@ -92,6 +92,7 @@ class SubgraphGNN(nn.Module):
         self.norm_g   = nn.LayerNorm(hidden_dim)
         self.gate_g   = nn.Linear(hidden_dim, hidden_dim)   # vector gate per graph node
         nn.init.constant_(self.gate_g.bias, -2.0)          # start sparse (gates near 0.12)
+        self.tri_embed = nn.Linear(1, hidden_dim, bias=False)  # map structural triangle count → H
         self.predict  = nn.Sequential(
             nn.Linear(hidden_dim * 3, hidden_dim),   # p_max + g_max + g_gated_sum
             nn.GELU(),
@@ -115,6 +116,10 @@ class SubgraphGNN(nn.Module):
     def forward(self, p_adj, p_feat, p_mask, g_adj, g_feat, g_mask):
         p_enc = self._encode(p_adj, p_feat)   # (B, Np, H)
         g_enc = self._encode(g_adj, g_feat)   # (B, Ng, H)
+        # Augment graph enc with structural triangle count per node
+        A2_g  = torch.bmm(g_adj, g_adj)                              # (B, Ng, Ng) 2-hop paths
+        tri_c = (A2_g * g_adj).sum(dim=-1, keepdim=True) / 2        # (B, Ng, 1) triangles per node
+        g_enc = g_enc + self.tri_embed(tri_c)                        # (B, Ng, H) augmented
 
         p_mask_f = p_mask.unsqueeze(-1).float()  # (B, Np, 1)
         g_mask_f = g_mask.unsqueeze(-1).float()
