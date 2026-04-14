@@ -30,7 +30,7 @@ from prepare import (
 
 HIDDEN_DIM    = 128      # GNN hidden dimension
 NUM_LAYERS    = 3        # number of GNN message-passing layers
-DROPOUT       = 0.2      # dropout probability
+DROPOUT       = 0.1      # dropout probability
 LR            = 1e-3     # learning rate
 WEIGHT_DECAY  = 1e-5     # Adam weight decay
 BATCH_SIZE    = 256      # training batch size
@@ -78,7 +78,7 @@ class SubgraphGNN(nn.Module):
         self.layers = nn.ModuleList(
             [GNNLayer(hidden_dim, dropout) for _ in range(num_layers)]
         )
-        # Bidirectional cross-attention
+        # Bidirectional cross-attention with pre-norm
         self.cross_attn_p2g = nn.MultiheadAttention(
             embed_dim=hidden_dim, num_heads=4,
             dropout=dropout, batch_first=True,
@@ -87,6 +87,8 @@ class SubgraphGNN(nn.Module):
             embed_dim=hidden_dim, num_heads=4,
             dropout=dropout, batch_first=True,
         )
+        self.norm_p = nn.LayerNorm(hidden_dim)
+        self.norm_g = nn.LayerNorm(hidden_dim)
         self.predict = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
@@ -114,17 +116,21 @@ class SubgraphGNN(nn.Module):
         p_mask_f = p_mask.unsqueeze(-1).float()  # (B, Np, 1)
         g_mask_f = g_mask.unsqueeze(-1).float()
 
-        # Pattern attends to graph
         g_key_mask = ~g_mask
-        p_out, _ = self.cross_attn_p2g(
-            p_enc, g_enc, g_enc, key_padding_mask=g_key_mask,
-        )                                     # (B, Np, H)
-
-        # Graph attends to pattern
         p_key_mask = ~p_mask
-        g_out, _ = self.cross_attn_g2p(
-            g_enc, p_enc, p_enc, key_padding_mask=p_key_mask,
-        )                                     # (B, Ng, H)
+
+        # Pre-norm + residual cross-attention
+        p_attn, _ = self.cross_attn_p2g(
+            self.norm_p(p_enc), self.norm_g(g_enc), self.norm_g(g_enc),
+            key_padding_mask=g_key_mask,
+        )
+        p_out = p_enc + p_attn                        # (B, Np, H)
+
+        g_attn, _ = self.cross_attn_g2p(
+            self.norm_g(g_enc), self.norm_p(p_enc), self.norm_p(p_enc),
+            key_padding_mask=p_key_mask,
+        )
+        g_out = g_enc + g_attn                        # (B, Ng, H)
 
         p_pool = (p_out * p_mask_f).max(dim=1).values  # (B, H)
         g_pool = (g_out * g_mask_f).max(dim=1).values  # (B, H)
