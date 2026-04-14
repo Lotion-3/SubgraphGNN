@@ -163,8 +163,8 @@ optimizer = torch.optim.Adam(
 def lr_lambda(step):
     if step < WARMUP_STEPS:
         return step / max(1, WARMUP_STEPS)
-    # cosine decay to 5% of peak over 2000 steps
-    t = (step - WARMUP_STEPS) / max(1, 2000 - WARMUP_STEPS)
+    # cosine decay to 5% of peak; 3500 steps matches the ~5-min budget
+    t = (step - WARMUP_STEPS) / max(1, 3500 - WARMUP_STEPS)
     return 0.05 + 0.95 * 0.5 * (1 + math.cos(math.pi * min(t, 1.0)))
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
