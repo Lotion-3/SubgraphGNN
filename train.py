@@ -78,8 +78,12 @@ class SubgraphGNN(nn.Module):
         self.layers = nn.ModuleList(
             [GNNLayer(hidden_dim, dropout) for _ in range(num_layers)]
         )
-        # Cross-attention: pattern queries the graph
-        self.cross_attn = nn.MultiheadAttention(
+        # Bidirectional cross-attention
+        self.cross_attn_p2g = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=4,
+            dropout=dropout, batch_first=True,
+        )
+        self.cross_attn_g2p = nn.MultiheadAttention(
             embed_dim=hidden_dim, num_heads=4,
             dropout=dropout, batch_first=True,
         )
@@ -107,19 +111,23 @@ class SubgraphGNN(nn.Module):
         p_enc = self._encode(p_adj, p_feat)   # (B, Np, H)
         g_enc = self._encode(g_adj, g_feat)   # (B, Ng, H)
 
-        # Pattern nodes attend to graph nodes; mask out padding
-        g_key_mask = ~g_mask                  # True = ignore (MultiheadAttention convention)
-        p_out, _ = self.cross_attn(
-            p_enc, g_enc, g_enc,
-            key_padding_mask=g_key_mask,
-        )                                     # (B, Np, H)
-
-        # Masked max-pool
         p_mask_f = p_mask.unsqueeze(-1).float()  # (B, Np, 1)
         g_mask_f = g_mask.unsqueeze(-1).float()
 
-        p_pool = (p_out  * p_mask_f).max(dim=1).values  # (B, H)
-        g_pool = (g_enc  * g_mask_f).max(dim=1).values  # (B, H)
+        # Pattern attends to graph
+        g_key_mask = ~g_mask
+        p_out, _ = self.cross_attn_p2g(
+            p_enc, g_enc, g_enc, key_padding_mask=g_key_mask,
+        )                                     # (B, Np, H)
+
+        # Graph attends to pattern
+        p_key_mask = ~p_mask
+        g_out, _ = self.cross_attn_g2p(
+            g_enc, p_enc, p_enc, key_padding_mask=p_key_mask,
+        )                                     # (B, Ng, H)
+
+        p_pool = (p_out * p_mask_f).max(dim=1).values  # (B, H)
+        g_pool = (g_out * g_mask_f).max(dim=1).values  # (B, H)
 
         return self.predict(torch.cat([p_pool, g_pool], dim=-1))  # (B, 1)
 
