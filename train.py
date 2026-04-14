@@ -88,10 +88,11 @@ class SubgraphGNN(nn.Module):
             embed_dim=hidden_dim, num_heads=4,
             dropout=dropout, batch_first=True,
         )
-        self.norm_p = nn.LayerNorm(hidden_dim)
-        self.norm_g = nn.LayerNorm(hidden_dim)
-        self.predict = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+        self.norm_p   = nn.LayerNorm(hidden_dim)
+        self.norm_g   = nn.LayerNorm(hidden_dim)
+        self.gate_g   = nn.Linear(hidden_dim, 1)   # scalar gate per graph node
+        self.predict  = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),   # p_max + g_max + g_gated_sum
             nn.GELU(),
             nn.Linear(hidden_dim, 1),
             nn.Softplus(),   # smooth non-negative output
@@ -133,10 +134,12 @@ class SubgraphGNN(nn.Module):
         )
         g_out = g_enc + g_attn                        # (B, Ng, H)
 
-        p_pool = (p_out * p_mask_f).max(dim=1).values  # (B, H)
-        g_pool = (g_out * g_mask_f).max(dim=1).values  # (B, H)
+        p_pool    = (p_out * p_mask_f).max(dim=1).values            # (B, H)
+        g_pool    = (g_out * g_mask_f).max(dim=1).values            # (B, H)
+        gate      = torch.sigmoid(self.gate_g(g_out))               # (B, Ng, 1)
+        g_gated   = (gate * g_out * g_mask_f).sum(dim=1)            # (B, H) soft count
 
-        return self.predict(torch.cat([p_pool, g_pool], dim=-1))  # (B, 1)
+        return self.predict(torch.cat([p_pool, g_pool, g_gated], dim=-1))  # (B, 1)
 
 
 # ---------------------------------------------------------------------------
