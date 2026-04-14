@@ -136,8 +136,8 @@ class SubgraphGNN(nn.Module):
 
         p_pool    = (p_out * p_mask_f).max(dim=1).values            # (B, H)
         g_pool    = (g_out * g_mask_f).max(dim=1).values            # (B, H)
-        gate      = torch.sigmoid(self.gate_g(g_out))               # (B, Ng, 1)
-        g_gated   = (gate * g_out * g_mask_f).sum(dim=1)            # (B, H) soft count
+        gate      = torch.sigmoid(self.gate_g(g_out))               # (B, Ng, H) pattern-cond.
+        g_gated   = (gate * g_enc * g_mask_f).sum(dim=1)            # (B, H) structural count
 
         return self.predict(torch.cat([p_pool, g_pool, g_gated], dim=-1))  # (B, 1)
 
