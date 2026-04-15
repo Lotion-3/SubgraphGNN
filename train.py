@@ -34,7 +34,7 @@ DROPOUT       = 0.0      # no dropout — model benefits from full capacity
 LR            = 1e-3     # learning rate
 WEIGHT_DECAY  = 1e-5     # Adam weight decay
 BATCH_SIZE    = 256      # training batch size
-MAX_GRAD_NORM = 8.0      # gradient clipping
+MAX_GRAD_NORM = 5.0      # tighter gradient clipping for single-cycle stability
 WARMUP_STEPS  = 50       # linear LR warmup
 
 # ---------------------------------------------------------------------------
