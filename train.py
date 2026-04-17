@@ -65,9 +65,9 @@ MAX_GRAD_NORM = 5.0
 WARMUP_STEPS  = 50
 
 # Intestinal data mix: every INT_EVERY demo batches, run one intestinal batch
-INT_EVERY       = 4     # 20% of gradient steps use intestinal data
+INT_EVERY       = 2     # 33% of gradient steps use intestinal data
 INT_BATCH_SIZE  = 64    # intestinal samples per batch
-INT_LOSS_WEIGHT = 0.5   # weight for intestinal loss (noisier targets)
+INT_LOSS_WEIGHT = 0.5   # weight for intestinal loss
 
 # ---------------------------------------------------------------------------
 # Model
