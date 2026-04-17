@@ -296,7 +296,10 @@ class IntestinalData:
             p_adj, p_feat, p_mask = _build_p_tensors(lbl)
             g_adj, g_feat, g_mask = _build_g_tensors(
                 node_list, s['node_labels'], s['neighbors'])
-            target = float(count) * 3.0 / s['n_nodes']
+            # sqrt-transform: compress dynamic range (max ~0.94) while keeping zeros=0
+            # At eval: pred_count = mean(preds)^2 * n_nodes / 3
+            raw_target = float(count) * 3.0 / s['n_nodes']
+            target = math.sqrt(raw_target)
             items.append((p_adj, p_feat, p_mask, g_adj, g_feat, g_mask,
                           torch.tensor([target], dtype=torch.float32)))
         return [torch.stack([x[i] for x in items]) for i in range(7)]
@@ -343,7 +346,8 @@ class IntestinalData:
                     preds.append(out.cpu())
                 preds = torch.cat(preds).view(-1)
 
-                pred_count = preds.mean().item() * s['n_nodes'] / 3.0
+                # Invert sqrt: pred ≈ sqrt(count*3/n), so count ≈ mean(pred)^2 * n/3
+                pred_count = (preds.mean().item() ** 2) * s['n_nodes'] / 3.0
                 total_sq  += (pred_count - true_count) ** 2
                 total_n   += 1
 
