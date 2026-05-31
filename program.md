@@ -4,14 +4,18 @@ Autonomous research loop for improving neural subgraph matching on spatial cell-
 
 ## Background
 
-TrimNN predicts how many times a small graph pattern (e.g. a triangle of cell types A-B-C)
-appears as a subgraph inside a large spatial transcriptomics graph. The ground truth is
-exact VF2 subgraph isomorphism counting. The goal is to train a GNN that approximates
-this counting function as accurately as possible.
+TrimNN predicts how many times a small graph pattern appears as a subgraph inside a large
+spatial transcriptomics graph. The ground truth is exact VF2 subgraph isomorphism counting.
+The goal is to train a GNN that approximates this counting function as accurately as possible.
 
-**Data**: `demo_data.gml` — 743 nodes (cells), 2211 edges, 8 cell types.
-Each training sample is a (pattern, k-hop subgraph, VF2 count) triple.
-There are 120 non-isomorphic triangle patterns × 743 nodes ≈ 89,160 samples total.
+Two pattern sizes are supported:
+- **Size-3** (triangle): 3 nodes, 3 edges — 120 non-isomorphic labeled patterns (8 cell types).
+- **Size-4** (kite): 4 nodes, 5 edges (0--1, 0--2, 1--2, 1--3, 2--3) — the only motif type
+  in the size-4 VF2 CSVs.
+
+**Data**: intestinal samples (up to ~40K nodes, 25 cell types, 124 samples for size-3 / 94
+for size-4) plus `demo_data.gml` (743 nodes, 8 cell types) used as regularization.
+Each training sample is a (pattern, k-hop subgraph, rank-normalized VF2 count) triple.
 
 ## Setup
 
@@ -47,17 +51,19 @@ python train.py > run.log 2>&1
 - Change the data, VF2 counts, or train/val split
 - Install new packages
 
-**The goal: get the lowest `val_mse`** (mean squared error between predicted and
-VF2-exact counts). Lower is better. The time budget is fixed, so improvements come
-entirely from better architecture or optimization.
+**The goal: maximize `vf2_spearman`** (average of size-3 and size-4 VF2 Spearman rank
+correlations). Higher is better. The time budget is fixed, so improvements come entirely
+from better architecture or optimization.
 
 **Hints**:
-- Most samples have count = 0 (sparse). Consider loss weighting or a two-stage model.
-- The input distribution is (120 patterns) × (743 k-hop subgraphs). Pattern identity
-  matters — the model must distinguish cell-type label combinations.
-- The GNN must compare pattern structure against graph structure to predict matches.
+- Most patterns have count = 0 (sparse). Consider loss weighting or a two-stage model.
+- The model must handle both size-3 (triangle) and size-4 (kite) patterns simultaneously.
+  Pattern identity and structure both matter — the GNN must distinguish cell-type label
+  combinations AND edge structure.
 - Cross-graph attention (pattern queries graph) is a natural inductive bias here.
-- Log-transforming counts (log1p / expm1) often helps with skewed count distributions.
+- Rank-normalized targets (rank/n_nonzero) directly optimize Spearman correlation.
+- The demo graph (743 nodes, 8 cell types) provides regularization; intestinal graphs
+  (up to 40K nodes, 25 cell types) provide the main signal.
 
 **Simplicity criterion**: a small improvement from simpler code is better than
 a large improvement from fragile complexity.
@@ -66,7 +72,10 @@ a large improvement from fragile complexity.
 
 ```
 ---
-val_mse:          0.123456
+vf2_spearman:     0.XXXXXX   (average VF2 Spearman, size-3 + size-4)
+val_bin_mse:      0.123456
+val_bce:          0.123456
+trimnn_mse:       123.4567
 training_seconds: 300.1
 total_seconds:    305.2
 peak_ram_mb:      0.0
@@ -78,7 +87,7 @@ num_layers:       3
 
 Extract the key metric:
 ```
-grep "^val_mse:" run.log
+grep "^vf2_spearman:" run.log
 ```
 
 ## Logging results
@@ -86,7 +95,7 @@ grep "^val_mse:" run.log
 Track in `results.tsv` (tab-separated, untracked by git):
 
 ```
-commit	val_mse	status	description
+commit	vf2_spearman	status	description
 ```
 
 ## Experiment loop
@@ -97,11 +106,11 @@ LOOP FOREVER:
 2. Tune `train.py` with an experimental idea
 3. `git commit`
 4. `python train.py > run.log 2>&1`
-5. `grep "^val_mse:" run.log`
+5. `grep "^vf2_spearman:" run.log`
 6. If empty → crash. Run `tail -50 run.log` to diagnose. Fix if trivial, else skip.
 7. Log to `results.tsv`
-8. If `val_mse` improved (lower) → keep the commit
-9. If `val_mse` is equal or worse → `git reset --hard HEAD~1`
+8. If `vf2_spearman` improved (higher) → keep the commit
+9. If `vf2_spearman` is equal or worse → `git reset --hard HEAD~1`
 
 **NEVER STOP.** Once started, run until the human interrupts you. Do not ask for permission
 to continue. You are an autonomous researcher.

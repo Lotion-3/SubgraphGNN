@@ -67,7 +67,7 @@ WARMUP_STEPS  = 50
 # Intestinal data mix: every INT_EVERY demo batches, run one intestinal batch
 INT_EVERY       = 2     # 33% of gradient steps use intestinal data
 INT_BATCH_SIZE  = 64    # intestinal samples per batch
-INT_LOSS_WEIGHT = 0.5   # weight for intestinal loss
+INT_LOSS_WEIGHT = 2.0   # weight for intestinal loss
 
 # ---------------------------------------------------------------------------
 # Model
@@ -210,17 +210,86 @@ def _build_g_tensors(node_list, node_labels, neighbors_map,
             torch.from_numpy(mask))
 
 
-def _build_p_tensors(label_list,
+TRIANGLE_EDGES = [(0,1),(0,2),(1,2)]
+SIZE4_EDGES    = [(0,1),(0,2),(1,2),(1,3),(2,3)]
+
+def _build_p_tensors(label_list, edges=None,
                      max_pat=MAX_PATTERN_NODES, max_labels=MAX_LABELS):
-    """Padded (adj, feat, mask) tensors for a triangle pattern."""
+    """Padded (adj, feat, mask) tensors for a pattern with given edges."""
+    if edges is None:
+        edges = TRIANGLE_EDGES
     adj  = torch.zeros(max_pat, max_pat)
-    adj[0,1] = adj[1,0] = adj[0,2] = adj[2,0] = adj[1,2] = adj[2,1] = 1.0
+    for u, v in edges:
+        if u < max_pat and v < max_pat:
+            adj[u,v] = adj[v,u] = 1.0
     feat = torch.zeros(max_pat, max_labels)
     for i, lbl in enumerate(label_list[:max_pat]):
         feat[i, int(lbl) % max_labels] = 1.0
     mask = torch.zeros(max_pat, dtype=torch.bool)
     mask[:min(len(label_list), max_pat)] = True
     return adj, feat, mask
+
+
+# Demo size-4 VF2 data for eval (generated: 5184 patterns)
+DEMO_VF2S4_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../TrimNN/demo_data/vf2s4/Occurrence_number_size4.csv"))
+
+@torch.no_grad()
+def evaluate_demo_s4_spearman(model, device):
+    """Spearman vs VF2 for size-4 patterns on demo graph."""
+    if not os.path.exists(DEMO_VF2S4_PATH):
+        return 0.0
+    demo_gml = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../TrimNN/demo_data/demo_data.gml"))
+    g = ig.read(demo_gml)
+    n = g.vcount()
+    labels = [int(x) for x in g.vs['label']]
+    neighbors = [[] for _ in range(n)]
+    for u, v in g.get_edgelist():
+        neighbors[u].append(v); neighbors[v].append(u)
+    khop = [_khop_nodes(neighbors, v, K_HOP_INT) for v in range(n)]
+    df   = pd.read_csv(DEMO_VF2S4_PATH)
+    # Sample 200 balanced patterns for speed
+    rng    = random.Random(7)
+    nonzero = [(json.loads(r['label']), int(r['occurrence_number'])) for _,r in df.iterrows() if r['occurrence_number']>0]
+    zero    = [(json.loads(r['label']), int(r['occurrence_number'])) for _,r in df.iterrows() if r['occurrence_number']==0]
+    pats = rng.sample(nonzero, min(100, len(nonzero))) + rng.sample(zero, min(100, len(zero)))
+    eval_nodes = rng.sample(range(n), min(100, n))
+    g_adjs, g_feats, g_masks = [], [], []
+    for cn in eval_nodes:
+        ga, gf, gm = _build_g_tensors(khop[cn], labels, neighbors)
+        g_adjs.append(ga); g_feats.append(gf); g_masks.append(gm)
+    G_ADJ  = torch.stack(g_adjs).to(device)
+    G_FEAT = torch.stack(g_feats).to(device)
+    G_MASK = torch.stack(g_masks).to(device)
+    N_eval = len(eval_nodes)
+    preds_all, trues_all = [], []
+    model.eval()
+    for lbl, true_cnt in pats:
+        pa, pf, pm = _build_p_tensors(lbl, SIZE4_EDGES)
+        PA = pa.unsqueeze(0).expand(N_eval,-1,-1).to(device)
+        PF = pf.unsqueeze(0).expand(N_eval,-1,-1).to(device)
+        PM = pm.unsqueeze(0).expand(N_eval,-1).to(device)
+        ps = []
+        for i in range(0, N_eval, 128):
+            out = model(PA[i:i+128], PF[i:i+128], PM[i:i+128],
+                        G_ADJ[i:i+128], G_FEAT[i:i+128], G_MASK[i:i+128])
+            ps.append(out.cpu())
+        pred_cnt = torch.cat(ps).mean().item() * n
+        preds_all.append(pred_cnt); trues_all.append(float(true_cnt))
+    model.train()
+    nn = len(preds_all)
+    if nn < 2: return 0.0
+    def _rank(lst):
+        s = sorted(range(nn), key=lambda i: lst[i])
+        r = [0]*nn
+        for rk, idx in enumerate(s): r[idx] = rk
+        return r
+    rp, rt = _rank(preds_all), _rank(trues_all)
+    mrp, mrt = sum(rp)/nn, sum(rt)/nn
+    num = sum((rp[i]-mrp)*(rt[i]-mrt) for i in range(nn))
+    den = (sum((r-mrp)**2 for r in rp)*sum((r-mrt)**2 for r in rt))**0.5
+    return num/den if den > 0 else 0.0
 
 
 class IntestinalData:
@@ -238,8 +307,8 @@ class IntestinalData:
         Predicted whole count = mean(preds) × n_nodes / 3
     """
 
-    EVAL_PATTERNS = 30    # patterns per graph for evaluation
-    EVAL_NODES    = 150   # nodes per (pattern, graph) for evaluation
+    EVAL_PATTERNS = 50    # more patterns → more high-count samples in eval
+    EVAL_NODES    = 200   # more nodes → more stable per-pattern estimate
 
     def __init__(self):
         self.samples = []
@@ -271,6 +340,8 @@ class IntestinalData:
             patterns = [(json.loads(row['label']), int(row['occurrence_number']))
                         for _, row in df.iterrows()]
 
+            zero_pats    = [(l,c) for l,c in patterns if c == 0]
+            nonzero_pats = [(l,c) for l,c in patterns if c > 0]
             self.samples.append({
                 'name':        d,
                 'n_nodes':     n,
@@ -278,6 +349,8 @@ class IntestinalData:
                 'neighbors':   neighbors,
                 'khop':        khop,
                 'patterns':    patterns,
+                'zero_pats':   zero_pats,
+                'nonzero_pats': nonzero_pats,
             })
             print(f"  {d}: {n:,} nodes, {len(patterns)} patterns")
 
@@ -286,34 +359,70 @@ class IntestinalData:
               f"in {time.time()-t0:.1f}s")
 
     def sample_batch(self, batch_size=INT_BATCH_SIZE):
-        """Training mini-batch with per-node contribution targets."""
+        """Balanced 50/50 batch: half zero-count, half count-weighted non-zero.
+
+        Fixes the zero-dominance bias (Spearman=0.04) without losing zero
+        calibration (which pure count-weighting destroyed, zero_mae 0.07→15).
+        """
         items = []
-        while len(items) < batch_size:
-            s              = random.choice(self.samples)
-            lbl, count     = random.choice(s['patterns'])
-            cn             = random.randint(0, s['n_nodes'] - 1)
-            node_list      = s['khop'][cn]
+        n_zero    = batch_size // 2
+        n_nonzero = batch_size - n_zero
+
+        def _make_item(s, lbl, count):
+            cn        = random.randint(0, s['n_nodes'] - 1)
+            node_list = s['khop'][cn]
             p_adj, p_feat, p_mask = _build_p_tensors(lbl)
             g_adj, g_feat, g_mask = _build_g_tensors(
                 node_list, s['node_labels'], s['neighbors'])
-            # sqrt-transform: compress dynamic range (max ~0.94) while keeping zeros=0
-            # At eval: pred_count = mean(preds)^2 * n_nodes / 3
             raw_target = float(count) * 3.0 / s['n_nodes']
             target = math.sqrt(raw_target)
-            items.append((p_adj, p_feat, p_mask, g_adj, g_feat, g_mask,
-                          torch.tensor([target], dtype=torch.float32)))
+            return (p_adj, p_feat, p_mask, g_adj, g_feat, g_mask,
+                    torch.tensor([target], dtype=torch.float32))
+
+        # Half from zero-count patterns (uniform)
+        while len(items) < n_zero:
+            s = random.choice(self.samples)
+            if s['zero_pats']:
+                lbl, count = random.choice(s['zero_pats'])
+                items.append(_make_item(s, lbl, count))
+
+        # Non-zero half: 50% high-count (>100) + 50% low/mid
+        # Doubles high-count representation vs uniform-across-3-tiers (was 1/3)
+        # to give the model more gradient signal where error is largest
+        n_high_target = (batch_size - n_zero) // 2
+        n_lowmid_target = (batch_size - n_zero) - n_high_target
+
+        # Fill high-count slots first
+        attempts = 0
+        while len(items) - n_zero < n_high_target and attempts < 10000:
+            attempts += 1
+            s = random.choice(self.samples)
+            high = [(l,c) for l,c in s['nonzero_pats'] if c > 100]
+            if high:
+                lbl, count = random.choice(high)
+                items.append(_make_item(s, lbl, count))
+
+        # Fill remaining non-zero slots with low/mid patterns
+        while len(items) < batch_size:
+            s = random.choice(self.samples)
+            if s['nonzero_pats']:
+                low = [(l,c) for l,c in s['nonzero_pats'] if 1 <= c <= 100]
+                if low:
+                    lbl, count = random.choice(low)
+                    items.append(_make_item(s, lbl, count))
+
         return [torch.stack([x[i] for x in items]) for i in range(7)]
 
     @torch.no_grad()
     def evaluate(self, model, device):
         """
-        Whole-graph MSE: mean over EVAL_PATTERNS patterns per graph.
-        Aggregation: mean(per-node predictions) × n_nodes / 3 = predicted count.
+        Full VF2 benchmark suite:
+          MSE, MAE, R², Spearman ρ, per-count-bucket MAE.
         """
         model.eval()
-        total_sq = 0.0
-        total_n  = 0
-        rng      = random.Random(0)   # fixed seed for reproducible eval
+        preds_all = []
+        trues_all = []
+        rng = random.Random(0)
 
         for s in self.samples:
             eval_pats  = rng.sample(s['patterns'],
@@ -321,7 +430,6 @@ class IntestinalData:
             eval_nodes = rng.sample(range(s['n_nodes']),
                                     min(self.EVAL_NODES, s['n_nodes']))
 
-            # Pre-build graph tensors for sampled nodes
             g_adjs, g_feats, g_masks = [], [], []
             for cn in eval_nodes:
                 ga, gf, gm = _build_g_tensors(
@@ -346,13 +454,47 @@ class IntestinalData:
                     preds.append(out.cpu())
                 preds = torch.cat(preds).view(-1)
 
-                # Invert sqrt: pred ≈ sqrt(count*3/n), so count ≈ mean(pred)^2 * n/3
                 pred_count = (preds.mean().item() ** 2) * s['n_nodes'] / 3.0
-                total_sq  += (pred_count - true_count) ** 2
-                total_n   += 1
+                preds_all.append(pred_count)
+                trues_all.append(float(true_count))
 
         model.train()
-        return total_sq / max(total_n, 1), total_n
+        n = len(trues_all)
+
+        # MSE / MAE
+        mse = sum((p-t)**2 for p,t in zip(preds_all,trues_all)) / n
+        mae = sum(abs(p-t)  for p,t in zip(preds_all,trues_all)) / n
+
+        # R²
+        mean_t = sum(trues_all) / n
+        ss_tot = sum((t - mean_t)**2 for t in trues_all)
+        ss_res = sum((p - t)**2 for p,t in zip(preds_all,trues_all))
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+        # Spearman rank correlation
+        def _rank(lst):
+            s = sorted(range(len(lst)), key=lambda i: lst[i])
+            r = [0]*len(lst)
+            for rank, idx in enumerate(s): r[idx] = rank
+            return r
+        rp = _rank(preds_all); rt = _rank(trues_all)
+        mean_rp = sum(rp)/n; mean_rt = sum(rt)/n
+        num = sum((rp[i]-mean_rp)*(rt[i]-mean_rt) for i in range(n))
+        den = (sum((r-mean_rp)**2 for r in rp)*sum((r-mean_rt)**2 for r in rt))**0.5
+        spearman = num/den if den > 0 else 0.0
+
+        # Per-count-bucket MAE
+        buckets = {'zero':(0,0),'low':(1,10),'mid':(11,100),'high':(101,1e9)}
+        bucket_stats = {}
+        for bname,(lo,hi) in buckets.items():
+            pairs = [(p,t) for p,t in zip(preds_all,trues_all) if lo<=t<=hi]
+            if pairs:
+                bucket_stats[bname] = (sum(abs(p-t) for p,t in pairs)/len(pairs), len(pairs))
+            else:
+                bucket_stats[bname] = (0.0, 0)
+
+        return dict(mse=mse, mae=mae, r2=r2, spearman=spearman,
+                    n=n, buckets=bucket_stats)
 
 
 # ---------------------------------------------------------------------------
@@ -465,15 +607,28 @@ print()
 # ---------------------------------------------------------------------------
 
 model.eval()
-demo_val_mse        = evaluate_val_mse(model, val_loader, device)
-int_mse, int_n      = int_data.evaluate(model, device)
+demo_val_mse  = evaluate_val_mse(model, val_loader, device)
+ev            = int_data.evaluate(model, device)
+s4_spearman   = evaluate_demo_s4_spearman(model, device)
+vf2_spearman  = (ev['spearman'] + s4_spearman) / 2.0
 
 t_end         = time.time()
 total_seconds = t_end - t_start
 
+b = ev['buckets']
 print("---")
+print(f"vf2_spearman:         {vf2_spearman:.6f}  (avg size-3+4 Spearman vs VF2)")
+print(f"vf2_spearman_s3:      {ev['spearman']:.6f}  (size-3 intestinal Spearman)")
+print(f"vf2_spearman_s4:      {s4_spearman:.6f}  (size-4 demo Spearman)")
 print(f"val_mse:              {demo_val_mse:.6f}")
-print(f"int_val_mse:          {int_mse:.4f}  (n_eval={int_n})")
+print(f"int_val_mse:          {ev['mse']:.4f}  (n_eval={ev['n']})")
+print(f"int_mae:              {ev['mae']:.2f}")
+print(f"int_r2:               {ev['r2']:.4f}   (R² — variance explained)")
+print(f"int_spearman:         {ev['spearman']:.4f}  (rank correlation vs VF2)")
+print(f"bucket_zero_mae:      {b['zero'][0]:.2f}  (n={b['zero'][1]})")
+print(f"bucket_low_mae:       {b['low'][0]:.2f}   (count 1-10, n={b['low'][1]})")
+print(f"bucket_mid_mae:       {b['mid'][0]:.2f}   (count 11-100, n={b['mid'][1]})")
+print(f"bucket_high_mae:      {b['high'][0]:.2f}  (count >100, n={b['high'][1]})")
 print(f"training_seconds:     {total_train_time:.1f}")
 print(f"total_seconds:        {total_seconds:.1f}")
 print(f"peak_ram_mb:          0.0")
