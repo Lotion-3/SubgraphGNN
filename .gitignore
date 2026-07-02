@@ -19,5 +19,13 @@ AGENTS.md
 # Experimental code/artifacts
 dev/
 
-# Results file
-results.tsv
+# karpathy/autoresearch framework files (not part of this project's showcase)
+train.py
+prepare.py
+program.md
+research_loop.py
+analysis.ipynb
+progress.png
+pyproject.toml
+uv.lock
+.python-version
