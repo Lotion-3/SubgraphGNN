@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 # ---- Config ----
 CKPT_PATH    = os.path.join(os.path.dirname(__file__), "trimnn_model.pt")
-INT_BASE     = "/media/volume/LLM_largeData/TrimNNCMD/TrimNN/intestinalOutputs"
+INT_BASE     = os.path.join(os.path.dirname(__file__), "../TrimNN/intestinalOutputs")
 EVAL_SAMPLE  = "B005_ascending_ct24"
 GML_PATH     = os.path.join(INT_BASE, EVAL_SAMPLE, f"{EVAL_SAMPLE}.gml")
 VF2_PATH     = os.path.join(INT_BASE, EVAL_SAMPLE, f"{EVAL_SAMPLE}_vf2s3",

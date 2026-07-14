@@ -15,7 +15,7 @@ import torch.nn.functional as F
 
 # ---- Config ----
 CKPT_PATH  = os.path.join(os.path.dirname(__file__), "trimnn_model.pt")
-INT_BASE   = "/media/volume/LLM_largeData/TrimNNCMD/TrimNN/intestinalOutputs"
+INT_BASE   = os.path.join(os.path.dirname(__file__), "../TrimNN/intestinalOutputs")
 K_HOP        = 2
 N_EVAL_NODES = 150   # fewer nodes for faster multi-sample eval
 N_EVAL_PATS  = 600   # sample 600 patterns (300 nonzero + 300 zero) per sample

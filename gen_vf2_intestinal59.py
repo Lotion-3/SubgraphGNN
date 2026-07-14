@@ -15,7 +15,7 @@ import os, sys, time, random, json
 import igraph as ig
 import pandas as pd
 
-INT_BASE = "/media/volume/LLM_largeData/TrimNNCMD/TrimNN/intestinalOutputs"
+INT_BASE = os.path.join(os.path.dirname(__file__), "../TrimNN/intestinalOutputs")
 
 # Tissues to generate VF2 for (B004_ascending = benchmark tissue)
 TISSUES = [
