@@ -894,13 +894,13 @@ def evaluate_demo(model, val_loader, device):
 # exp74 patched total=24950 (works but limits steps). exp75 restores total=33000 AND extends
 # budget to 20000s → LR reaches 1% at end with 33% more training steps overall.
 # Config: hidden=192 seed=42 LR=1e-3 ILW=20 WD=1e-5 20000s total=33000 (all exp63 optimal)
-_TIME_BUDGET = 20000   # exp75: 20000s (33% more than exp63/74)
+_TIME_BUDGET = 300     # GPU: 5-min budget for autoresearch loop (was 20000s on CPU)
 
 t_start = time.time()
 torch.manual_seed(42)  # exp71: seed=42 (exp63 best; returning to it after seed=7 exp70)
 random.seed(42)
 np.random.seed(42)
-device  = torch.device("cpu")
+device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Loading demo data ...")
 all_data             = generate_data()
@@ -920,7 +920,7 @@ def lr_lambda(step):
     if step < WARMUP_STEPS:
         return step / max(1, WARMUP_STEPS)
     t     = step - WARMUP_STEPS
-    total = 33000 - WARMUP_STEPS   # exp75: restored to original — correct for 20000s budget (33000×0.6s≈20000s)
+    total = 6000 - WARMUP_STEPS    # GPU: ~6000 steps in 300s at ~0.05s/step on T4
     return 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * min(t / total, 1.0)))
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
