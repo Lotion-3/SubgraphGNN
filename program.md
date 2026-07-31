@@ -1,116 +1,155 @@
-# autoresearch — TrimNN edition
+# autoresearch — SubgraphGNN
 
-Autonomous research loop for improving neural subgraph matching on spatial cell-type graphs.
+Autonomous research loop for improving neural subgraph matching on real intestinal tissue graphs.
 
-## Background
+## Task
 
-TrimNN predicts how many times a small graph pattern appears as a subgraph inside a large
-spatial transcriptomics graph. The ground truth is exact VF2 subgraph isomorphism counting.
-The goal is to train a GNN that approximates this counting function as accurately as possible.
+Predict how many times a small graph pattern (size 3 or 4) appears as a subgraph inside a large
+spatial cell-type graph. Ground truth is exact VF2 subgraph isomorphism counting. The metric is
+**vf2_spearman** — the average of size-3 and size-4 Spearman rank correlations vs VF2.
 
-Two pattern sizes are supported:
-- **Size-3** (triangle): 3 nodes, 3 edges — 120 non-isomorphic labeled patterns (8 cell types).
-- **Size-4** (kite): 4 nodes, 5 edges (0--1, 0--2, 1--2, 1--3, 2--3) — the only motif type
-  in the size-4 VF2 CSVs.
+**The only file you modify is `train_trimnn.py`.** Everything else is fixed.
 
-**Data**: intestinal samples (up to ~40K nodes, 25 cell types, 124 samples for size-3 / 94
-for size-4) plus `demo_data.gml` (743 nodes, 8 cell types) used as regularization.
-Each training sample is a (pattern, k-hop subgraph, rank-normalized VF2 count) triple.
-
-## Setup
-
-1. **Agree on a run tag** — propose a tag based on today's date (e.g. `apr11`). The branch
-   `autoresearch/<tag>` must not already exist.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**:
-   - `prepare.py` — fixed: data generation, VF2 ground truth, dataset, evaluation. Do not modify.
-   - `train.py` — the file you modify: model architecture, optimizer, hyperparameters.
-4. **Verify data exists**: run `python prepare.py` once if the cache is missing
-   (`~/.cache/autoresearch_trimnn/data_k2.pkl`).
-5. **Initialize results.tsv** with just the header row.
-6. **Confirm and go.**
-
-## Experimentation
-
-Each experiment runs for a **fixed time budget of 5 minutes** (wall-clock training time,
-excluding startup). Launch with:
-
-```
-python train.py > run.log 2>&1
-```
-
-**What you CAN do** — modify `train.py` only:
-- Model architecture: GNN layers, hidden dim, aggregation, attention, skip connections
-- Optimizer: Adam, SGD, Muon, learning rate, weight decay, scheduling
-- Loss function: MSE, MAE, Huber, log-space, count-weighted, etc.
-- Hyperparameters: batch size, dropout, gradient clipping
-- Training loop: learning rate warmup/warmdown, gradient accumulation
-
-**What you CANNOT do**:
-- Modify `prepare.py` — it defines the task and the fixed evaluation
-- Change the data, VF2 counts, or train/val split
-- Install new packages
-
-**The goal: maximize `vf2_spearman`** (average of size-3 and size-4 VF2 Spearman rank
-correlations). Higher is better. The time budget is fixed, so improvements come entirely
-from better architecture or optimization.
-
-**Hints**:
-- Most patterns have count = 0 (sparse). Consider loss weighting or a two-stage model.
-- The model must handle both size-3 (triangle) and size-4 (kite) patterns simultaneously.
-  Pattern identity and structure both matter — the GNN must distinguish cell-type label
-  combinations AND edge structure.
-- Cross-graph attention (pattern queries graph) is a natural inductive bias here.
-- Rank-normalized targets (rank/n_nonzero) directly optimize Spearman correlation.
-- The demo graph (743 nodes, 8 cell types) provides regularization; intestinal graphs
-  (up to 40K nodes, 25 cell types) provide the main signal.
-
-**Simplicity criterion**: a small improvement from simpler code is better than
-a large improvement from fragile complexity.
-
-## Output format
-
-```
 ---
-vf2_spearman:     0.XXXXXX   (average VF2 Spearman, size-3 + size-4)
-val_bin_mse:      0.123456
-val_bce:          0.123456
-trimnn_mse:       123.4567
-training_seconds: 300.1
-total_seconds:    305.2
-peak_ram_mb:      0.0
-num_steps:        1234
-num_params_M:     0.52
-hidden_dim:       128
-num_layers:       3
+
+## Current best result (your baseline to beat)
+
+```
+vf2_spearman:  0.7614   (avg of s3=0.8164, s4=0.7063)
+s3_spearman:   0.8164   (size-3 vs VF2 ground truth, B004_ascending)
+s4_spearman:   0.7063
+s4_MCC:        0.6594
+calib_RMSE:    68.4
+multi_avg:     0.7514   (avg Spearman across 10 held-out intestinal samples)
 ```
 
-Extract the key metric:
+These are your targets. Any experiment that doesn't improve `vf2_spearman` above 0.7614 is reverted.
+
+---
+
+## Current architecture (`SubgraphGNN` in `train_trimnn.py`)
+
+```
+Pattern graph  ──► 3-layer GNN ──► cross-attn ──┐
+                                                  ├──► gated pool ──► sigmoid score
+Target subgraph ──► 3-layer GNN ──► cross-attn ──┘
+```
+
+Key components:
+- **3-layer message-passing GNN** (hidden=192) with ReLU, layer norm
+- **Bidirectional cross-attention**: pattern attends to subgraph, subgraph attends to pattern
+- **Gated pooling**: learned gate `σ(Wh)` weights the mean pool
+- **Size embedding**: lookup by motif size (3–9), added to pattern embeddings
+- **Sigmoid output**: score in [0, 1]
+
+Current hyperparameters (optimal from 75+ experiments):
+- `HIDDEN_DIM = 192`, `NUM_LAYERS = 3`, `DROPOUT = 0.0`
+- `LR = 1e-3`, `WEIGHT_DECAY = 1e-5`, `BATCH_SIZE = 256`
+- `MAX_GRAD_NORM = 5.0`, `WARMUP_STEPS = 50`
+- `INT_LOSS_WEIGHT = 20` (intestinal loss weight vs demo)
+- `INT_EVERY = 1` (intestinal batch every step)
+
+Loss: **soft-BCE on rank-normalized targets** — this was the key breakthrough (+59% RMSE, +89% MCC).
+```python
+# Rank-normalized target: (i+1)/n_nonzero for nonzero, 0.0 for zero
+int_loss = F.binary_cross_entropy(int_pred, rank_targets.clamp(0, 1))
+```
+
+---
+
+## What has already been tried and confirmed as suboptimal (do NOT repeat these)
+
+| Change | Result |
+|--------|--------|
+| hidden=128 | worse |
+| hidden=256 | worse |
+| num_layers=4 | worse |
+| dropout=0.1 | worse (hurts cross-attn) |
+| LR=5e-4 | worse |
+| LR=2e-3 | worse |
+| weight_decay=1e-3 | worse (over-regularized) |
+| ILW=30, ILW=40 | worse (ILW=20 is optimal) |
+| INT_EVERY=2 | worse |
+| MSE loss | much worse (-59% RMSE vs soft-BCE) |
+| Pairwise RankNet loss | completely flat (no gradient signal) |
+| Ensemble of two models | worse than single |
+| seed=7 (vs seed=42) | slightly worse |
+| More training time (20000s) | same ceiling — time is not the bottleneck |
+
+**The performance ceiling (~0.816 s3 Spearman) is architecture/data-limited, not compute-limited.**
+More training steps or longer budgets won't help. New ideas are needed.
+
+---
+
+## Promising directions not yet tried (try these first)
+
+1. **K_HOP=3** — currently using 2-hop subgraphs. Larger neighborhoods may capture more context.
+   Risk: much slower data loading; subgraphs become large. Try on a small subset first.
+
+2. **Structural node features** — add degree, clustering coefficient, or betweenness as extra
+   node features alongside cell-type label embeddings. Currently using only cell-type labels.
+
+3. **Direct ListNet / approx-Spearman loss** — RankNet failed (pairwise), but ListNet (listwise)
+   or a differentiable Spearman approximation may work better than soft-BCE.
+
+4. **Larger architecture with GPU** — now running on T4. hidden=256 with num_layers=4 was tried
+   on CPU (slow, underfits). With GPU it may now converge properly. Try hidden=256, layers=4.
+
+5. **Pattern edge features** — currently edge labels are all 0. The topology carries structure
+   (kite vs triangle) but encoding edge positions explicitly might help size generalization.
+
+6. **Contrastive training** — pair similar patterns (same label permutation, different size) and
+   push their scores to be similar. Could help multi-size generalization.
+
+7. **Two-stage model** — stage 1: binary classifier (zero vs nonzero); stage 2: regressor for
+   nonzero counts. The zero/nonzero imbalance (~80% zeros) may be hurting the regressor.
+
+8. **Graph-level features** — add global stats of the target subgraph (mean degree, label
+   entropy) as extra context to the cross-attention.
+
+---
+
+## Data
+
+- **Demo graph**: 743 nodes, 8 cell types, 89K (pattern, subgraph, VF2-count) training triples.
+  Used as regularization. Loaded from `../TrimNN/demo_data/`.
+- **Intestinal graphs**: 124 training samples (B004–B012 donors, 8 gut regions, ~5K–33K nodes,
+  22–25 cell types). Held out: B005 donor (10 samples). Loaded from `../TrimNN/intestinalOutputs/`.
+- Evaluation: B004_ascending (21,232 nodes, 2,925 size-3 patterns, 600 size-4 patterns),
+  scored on 1,000 lowest-entropy nodes.
+
+---
+
+## Output format (what the research loop reads)
+
+Training must print this block to stdout at the end:
+```
+vf2_spearman:          0.XXXXXX
+s3_spearman:           0.XXXXXX
+s4_spearman:           0.XXXXXX
+s4_mcc:                0.XXXXXX
+calib_rmse:            XX.XXXX
+training_seconds:      300.1
+num_steps:             6000
+num_params_M:          0.68
+hidden_dim:            192
+num_layers:            3
+```
+
+The loop extracts `vf2_spearman` with:
 ```
 grep "^vf2_spearman:" run.log
 ```
 
-## Logging results
+**Do not change this output format.** The research loop depends on it.
 
-Track in `results.tsv` (tab-separated, untracked by git):
+---
 
-```
-commit	vf2_spearman	status	description
-```
+## Rules
 
-## Experiment loop
-
-LOOP FOREVER:
-
-1. Check git state (branch, last commit)
-2. Tune `train.py` with an experimental idea
-3. `git commit`
-4. `python train.py > run.log 2>&1`
-5. `grep "^vf2_spearman:" run.log`
-6. If empty → crash. Run `tail -50 run.log` to diagnose. Fix if trivial, else skip.
-7. Log to `results.tsv`
-8. If `vf2_spearman` improved (higher) → keep the commit
-9. If `vf2_spearman` is equal or worse → `git reset --hard HEAD~1`
-
-**NEVER STOP.** Once started, run until the human interrupts you. Do not ask for permission
-to continue. You are an autonomous researcher.
+- **Modify only `train_trimnn.py`**. Do not touch eval scripts, data loaders, or VF2 files.
+- Each experiment runs for `_TIME_BUDGET = 300` seconds (5 minutes). Do not increase this.
+- The cosine LR schedule `total` is currently calibrated for ~6000 steps on T4. Adjust if
+  you change the architecture significantly (different step time → different step count).
+- If a run crashes with no `vf2_spearman` in the log: revert, diagnose from `run.log`, fix.
+- **NEVER STOP.** Run until the human interrupts. You are an autonomous researcher.
